@@ -1,0 +1,151 @@
+---
+title: "Text Classification of arXiv Research Abstracts"
+author: <center>Surbhi Verma </center>
+date: "`r Sys.Date()`"
+output:
+  slidy_presentation: default
+  ioslides_presentation: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(keras)
+```
+
+## Problem Recape
+
+- **Objective**: The primary objective of this project is to design and implement machine learning models capable of accurately classifying research abstracts from the arXiv API into their respective categories or fields of research based on content. These models will leverage the power of natural language processing and artificial intelligence to automate a task that would be impractical to perform manually.
+
+- **Challenge**: arXiv is a repository of preprints for papers in the fields of physics, mathematics, computer science, quantitative biology, quantitative finance, and statistics. With the ever-increasing volume of research papers, there's a compelling need for automated tools that can categorize these papers effectively to aid in better organization and search capabilities. This challenge is made harder because research often spans multiple fields, making manual categorization difficult.
+
+- **Benefits**: Automated arXiv abstract classification helps researchers find what they need faster, discover related research easily, and saves time by sorting content automatically.By streamlining the categorization process, it empowers researchers to focus on their core work, driving innovation and accelerating the pace of scientific discovery.
+
+---
+
+## Responding to Peer Comments
+
+**Comment:** What kind of data does the arXiv API offer for building the classification model?
+**Response:** The arXiv API provides us with metadata for scientific papers, crucial for our model. This includes primary_category, categories, and abstracts, which are instrumental in training our algorithms for accurate classification based on abstract content.
+
+**Comment:** Can you explain how the arXiv API provides access to research abstracts and what specific information you extract for text classification?
+**Response:** The arXiv API enables querying of their database to retrieve research abstracts and related metadata. For our text classification project, we're focusing on extracting primary_category, categories, and the abstracts themselves. These elements are pivotal in training our model to predict the paper's primary and secondary categories.
+
+**Comment:** Have you considered using different models for Data Modeling, like Naive Bayes or Logistic Regression?
+**Response:** We acknowledge the suitability of Naive Bayes for our problem and have included it in our approach. However, per our professor's guidance, we're not using Logistic Regression. Our focus is on leveraging H2O's AutoML for model selection, which provides a systematic and broad approach to identifying the most effective models for our task.
+
+---
+
+## Dataset Summary for Classification Model
+
+We have fetched a dataset from the arXiv API, consisting of metadata from scientific papers to train our classification model. The dataset includes the following columns:
+
+- `primary_category`: The main category under which the paper is classified.
+- `categories`: Additional categories that the paper falls under.
+- `abstract`: The abstract of the paper providing a summary of the content.
+
+The dataset comprises a diverse range of topics from condensed matter physics (`cond-mat`) to astrophysics (`astro-ph`) and beyond. The abstracts vary in length and complexity, containing detailed discussions of concepts such as electron-electron interactions, quantum entanglement, and many others.
+
+### Key Points from the Dataset:
+
+- **Diversity of Topics**: The dataset spans a broad spectrum of scientific disciplines, allowing for a robust classification model that can generalize across various fields.
+- **Abstract Complexity**: The abstracts include both simple and complex scientific language, presenting a challenge for natural language processing techniques.
+- **Category Balancing**: Some categories, like `cond-mat`, are more frequent than others, which may require balancing techniques during model training.
+
+---
+
+## Data Collection from arXiv API
+
+To build our classification model, we gathered metadata for scientific papers from the arXiv API. Below are the key points about our data collection process:
+
+- **Automated Requests**: We used the `httr` and `XML` packages in R to automate the process of sending queries to the arXiv API. This allowed us to fetch records in chunks, handling up to 8000 records per request to stay within the API's limits.
+
+- **Structured Querying**: Our search was focused on entries related to "electron" by setting the `search_query` parameter to `"all:electron"`. We iteratively adjusted the `start` parameter to retrieve subsequent chunks of data.
+
+- **Data Parsing**: After each successful API request, we parsed the returned XML content to extract relevant fields: `primary_category`, `categories`, and `abstract`. These were then combined into a single data frame.
+
+- **Error Handling**: We included error handling to stop the data fetching process if the API request failed, ensuring that we would be alerted to any issues immediately.
+
+- **Resulting Dataset**: The final dataset was trimmed to exactly 24,000 records to match our target. This dataset was then saved as a CSV file, `arxiv_datafinal.csv`, ready for analysis.
+
+---
+
+
+
+## Exploratory Data Analysis (EDA)
+
+1. **Category Distribution**: We used `ggplot2` to visualize the distribution of the paper categories, gaining insights into the most prevalent topics within our dataset.
+```{r}
+
+loaded_category_plot <- readRDS("category_distribution.rds")
+plot(loaded_category_plot)
+```
+
+2. **Word Frequency**: We utilized `tidytext` and `wordcloud` to analyze the frequency of words in abstracts, helping us identify the most common terms and potential keywords relevant to the categories.
+```{r}
+loaded_word_frequency_plot <- readRDS("word_frequency.rds")
+plot(loaded_word_frequency_plot)
+
+```
+
+3. **Abstract Length Analysis**: We assessed the length of abstracts to understand the verbosity of each category and its potential impact on model performance.
+```{r}
+loaded_abstract_length_plot <- readRDS("abstract_length_distribution.rds")
+plot(loaded_abstract_length_plot)
+
+```
+
+---
+
+
+
+### Modeling
+
+In our Approach we chose to run
+
+1. Naive Bayes Model
+
+2. Neural Network Model using Keras
+
+3. AutoML Models using H2O
+
+4. Ensemble Model combining Decision Trees and Naive Bayes
+
+1. **Data Preparation for Modeling**: 
+
+We tokenized abstracts using `keras` and padded them to create uniform input lengths. Labels were converted to numerical factors suitable for model training.
+
+```{r}
+keras_model <- load_model_hdf5("keras_model.h5")
+loaded_keras_plot <- readRDS("history.rds")
+plot(loaded_keras_plot)
+
+```
+
+
+2. **H2O AutoML**: We utilized H2O's AutoML capabilities to automatically train and evaluate a range of models, selecting the best performer based on validation set performance and achieved about 0.6621882 RMSE value that being the least in all the models.
+
+
+3. **Ensemble Approach**: We combined predictions from different models to create an ensemble, aiming to leverage their individual strengths and improve overall accuracy.
+
+
+---
+
+### Model Evaluation
+
+1. **Performance Metrics**: We evaluated our models using confusion matrices, accuracy, precision, recall, and F1 scores to comprehensively understand their predictive capabilities.
+
+**AI/ML Result Summary and Discussion**
+The results include confusion matrices for Naive Bayes and ensemble models, indicating the number of correct and incorrect predictions for each category. The Naive Bayes model shows significant confusion between certain categories, while the ensemble model exhibits a higher number of correct predictions, especially for Computer Science and High Energy Physics, indicating its better performance.
+
+The Keras model's training and validation loss and accuracy were plotted over epochs. The plots suggest the model may be overfitting, as validation accuracy does not improve with training accuracy, and validation loss does not decrease as sharply as training loss.
+
+In summary, the models demonstrated the ability to classify research abstracts into categories effectively, with the ensemble model showing the most promise. The project highlights the importance of proper feature engineering, model selection, and validation in building effective AI/ML systems for text classification. The models' confusion matrices and performance plots provide valuable feedback for further refinement.
+
+
+
+
+---
+
+
+![](ThankYou.jpeg)

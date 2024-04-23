@@ -1,0 +1,316 @@
+---
+title: "Untitled"
+author: "Surbhi Verma"
+date: "2023-12-05"
+output: html_document
+---
+
+```{r}
+# Load necessary libraries
+library(keras)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(h2o)
+library(ggplot2)
+library(RColorBrewer)
+library(tidytext)
+library(wordcloud)
+library(e1071)      # For Naive Bayes
+library(randomForest)
+library(caret)  
+```
+
+```{r}
+# Initialize H2O and get cluster info
+h2o.init(nthreads = -1) # -1 to use all cores
+h2o.clusterInfo()
+```
+
+```{r}
+# Load the data
+load_data <- read.csv(file="arxiv_data.csv")
+
+# Inspect the data structure
+str(load_data)
+
+# Data Cleaning: Remove potential duplicate rows (if any)
+load_data <- load_data %>%
+  distinct()
+
+# Check and summarize missing values
+summarise_all(load_data, funs(sum(is.na(.))))
+
+# Create a lookup table for category mapping
+lookup_table <- data.frame(category_prefix = c("cs", "math", "stat","eess","q-bio","q-fin"), 
+                           category_name = c("Computer Science", "Mathematics", "Statistics","Electrical Engineering and Systems Science","Quantitative Biology","Quantitative Finance"))
+
+# Join the dataframe with the lookup table using the category prefix
+df_modified <- load_data %>%
+  mutate(category_prefix = str_extract(load_data$primary_category, "^\\w+")) %>%
+  left_join(lookup_table, by = "category_prefix") %>%
+  mutate(category = category_name) %>%
+  select(-category_prefix)
+```
+
+```{r}
+# Set 'Physics' as category_name where category_name is NA
+df_modified$category_name[is.na(df_modified$category_name)] <- "Physics"
+
+# Select the relevant columns
+df_final <- df_modified[,c('abstract', 'category')]
+
+# Describing dataset
+str(df_final)
+```
+
+```{r}
+# EDA: Summary statistics of categories
+df_final %>%
+  group_by(category) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  arrange(desc(count))
+
+# Data Cleaning: Remove special characters from abstracts
+df_final$abstract <- map_chr(df_final$abstract, function(text) gsub("[^[:alnum:][:space:]]", "", text))
+
+```
+
+```{r}
+# EDA: Visualize the distribution of categories with a colorful palette
+ggplot(df_final, aes(x = category, fill = category)) +
+  geom_bar() +
+  scale_fill_brewer(palette = "Set3") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title = "Category Distribution", x = "Category", y = "Count")
+
+```
+
+```{r}
+# EDA: Word Frequency Analysis
+df_words <- df_final %>%
+  unnest_tokens(word, abstract) %>%
+  count(word, sort = TRUE)
+
+# Visualize top words
+ggplot(df_words[1:20, ], aes(x = reorder(word, n), y = n, fill = word)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Top 20 Frequent Words", x = "Words", y = "Frequency")
+```
+
+```{r}
+# EDA: Abstract Length Analysis
+df_final$abstract_length <- str_length(df_final$abstract)
+ggplot(df_final, aes(x = abstract_length)) +
+  geom_histogram(binwidth = 50, fill = "blue", color = "black") +
+  labs(title = "Distribution of Abstract Lengths", x = "Length of Abstract", y = "Count")
+
+```
+
+```{r}
+# Optional: Word Cloud
+set.seed(123)
+wordcloud(words = df_words$word, freq = df_words$n, min.freq = 1, max.words = 100, random.order = FALSE, rot.per = 0.35, colors = brewer.pal(8, "Dark2"))
+```
+```{r}
+# Split the dataframe into predictors and outcome
+texts <- df_final$abstract
+labels <- df_final$category
+
+# Tokenize the abstracts using keras tokenizer
+tokenizer <- text_tokenizer(num_words = 10000)
+tokenizer %>% fit_text_tokenizer(texts)
+
+# Convert texts to sequences
+sequences <- texts_to_sequences(tokenizer, texts)
+maxlen <- max(sapply(sequences, length)) # Find the maximum length of sequences
+
+# Padding sequences
+x_data <- pad_sequences(sequences, maxlen = maxlen)
+x_data <- as.data.frame(x_data)
+
+# Convert labels to factor
+y_data <- as.factor(labels)
+
+# Form a dataframe suitable for h2o
+df_h2o <- cbind(x_data, y_data)
+
+# Load dataframe into h2o environment
+data_h2o <- as.h2o(df_h2o, destination_frame = "dataset.hex")
+colnames(data_h2o) <- c(paste0('V', 1:maxlen), 'label')
+
+# Split data into training, validation, and testing sets
+splits <- h2o.splitFrame(data_h2o, ratios = c(0.7, 0.15), seed = 123) # 70/15/15 split
+train_h2o <- splits[[1]]
+valid_h2o <- splits[[2]]
+test_h2o <- splits[[3]]
+
+# Define outcome and predictor variables for H2O models
+y <- 'label'
+x <- setdiff(names(train_h2o), y)
+```
+
+```{r}
+# AutoML Model Training 
+automl_models_h2o <- h2o.automl(
+  x = x,
+  y = y,
+  training_frame = train_h2o,
+  validation_frame = valid_h2o,
+  leaderboard_frame = test_h2o,
+  max_runtime_secs = 180 
+)
+
+# View AutoML Leaderboard
+print(h2o.get_leaderboard(automl_models_h2o, extra_columns = "ALL"))
+
+
+```
+
+
+```{r}
+library(caret)
+library(e1071)
+# Dimensionality Reduction using PCA
+pca_result <- prcomp(as.data.frame(x_data), scale. = TRUE)
+x_data_pca <- as.data.frame(pca_result$x)
+
+# Splitting the data for machine learning models
+set.seed(123)
+splitIndex <- createDataPartition(df_final$category, p = 0.7, list = FALSE, times = 1)
+train_data <- x_data_pca[splitIndex, ]
+test_data <- x_data_pca[-splitIndex, ]
+train_labels <- df_final$category[splitIndex]
+test_labels <- df_final$category[-splitIndex]
+
+# Naive Bayes Model
+nb_model <- naiveBayes(train_labels ~ ., data = train_data)
+nb_predictions <- predict(nb_model, test_data)
+
+# Ensure train, test, and predicted labels have the same factor levels
+unique_labels <- levels(factor(df_final$category))
+
+train_labels_factor <- factor(train_labels, levels = unique_labels)
+test_labels_factor <- factor(test_labels, levels = unique_labels)
+nb_predictions_factor <- factor(nb_predictions, levels = unique_labels)
+
+# Evaluate Naive Bayes Model
+confusionMatrix(nb_predictions_factor, test_labels_factor)
+
+```
+
+```{r}
+#### KERAS MODELS #####
+library(keras)
+
+# Tokenization and Sequence Padding
+tokenizer <- text_tokenizer(num_words = 10000) %>% 
+  fit_text_tokenizer(texts)
+
+sequences <- texts_to_sequences(tokenizer, texts)
+x <- pad_sequences(sequences, maxlen = maxlen)
+
+# Convert labels to factor and ensure levels start from 1
+y_factor <- factor(labels, levels = unique(labels))
+
+# Check the levels of the factor (optional, for verification)
+print(levels(y_factor))
+
+# Convert factor to numeric indices starting from 0
+y <- as.integer(y_factor) - 1
+
+# Inspect the y variable to ensure all values are within the expected range (optional, for verification)
+print(head(y))
+
+# Split the data into training and testing sets
+set.seed(123)
+train_indices <- sample(1:length(y), length(y) * 0.7)
+x_train <- x[train_indices, ]
+y_train <- y[train_indices]
+x_test <- x[-train_indices, ]
+y_test <- y[-train_indices]
+
+# Build a Neural Network Model
+model <- keras_model_sequential() %>%
+  layer_embedding(input_dim = 10000, output_dim = 128, input_length = maxlen) %>%
+  layer_flatten() %>%
+  layer_dense(units = 64, activation = 'relu') %>%
+  layer_dense(units = length(unique(y)), activation = 'softmax') # Adjust the number of units to match the number of categories
+
+# Compile the Model
+model %>% compile(
+  loss = 'sparse_categorical_crossentropy',  # Correct loss function for multi-class classification
+  optimizer = 'adam',
+  metrics = 'accuracy'
+)
+
+# Train the Model
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_split = 0.2  # Use part of the training data for validation
+)
+
+# Plot the Training History (optional)
+plot(history)
+
+# Evaluate the Model on Test Data
+model %>% evaluate(x_test, y_test)
+
+```
+```{r}
+### ensemble model
+library(caret)
+library(e1071)   # For Naive Bayes
+library(gbm)     # For Gradient Boosting
+library(ggplot2)
+
+# Train multiple models on the training data
+set.seed(123)
+
+# Gradient Boosting Machine Model
+gbm_model <- train(x = train_data, y = train_labels, method = 'gbm', trControl = trainControl(method = 'cv', number = 5), verbose = FALSE)
+
+# Naive Bayes Model
+nb_model <- naiveBayes(train_labels ~ ., data = train_data)
+
+# SVM Model
+svm_model <- train(x = train_data, y = train_labels, method = 'svmRadial', trControl = trainControl(method = 'cv', number = 5))
+
+# Create a function for ensemble predictions
+ensemble_predict <- function(newdata) {
+  predictions <- data.frame(
+    gbm = predict(gbm_model, newdata),
+    nb = predict(nb_model, newdata),
+    svm = predict(svm_model, newdata)
+  )
+  apply(predictions, 1, function(x) {
+    as.character(names(sort(table(x), decreasing = TRUE))[1])
+  })
+}
+
+# Make predictions with the ensemble model
+ensemble_predictions <- ensemble_predict(test_data)
+
+# Convert predictions to factor with the same levels as the test labels
+ensemble_predictions_factor <- factor(ensemble_predictions, levels = unique_labels)
+
+# Evaluate the ensemble model and get confusion matrix
+conf_mat <- confusionMatrix(ensemble_predictions_factor, test_labels_factor)
+
+# Plot the confusion matrix
+confusionMatrixPlot <- ggplot(data = as.data.frame(conf_mat$table), aes(x = Reference, y = Prediction)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  geom_text(aes(label = sprintf("%0.1f", Freq)), vjust = 1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(fill = "Frequency")
+
+print(confusionMatrixPlot)
+```
+
+
